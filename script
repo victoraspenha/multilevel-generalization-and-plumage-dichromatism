@@ -1,0 +1,158 @@
+########################################################################################################################################
+########################################################################################################################################
+########################################################################################################################################
+########################################################################################################################################
+########################################################################################################################################
+########################################################################################################################################
+## Needed packages
+library(lme4)
+library(ape)
+library(ggplot2)
+library(caper)
+library(phangorn)
+library(regclass)
+library(psych)
+library(lme4)
+library(nlme)
+library(MuMIn)
+library(BBmisc)
+library(phytools)
+library(effects)
+library(car)
+library(ggpubr)
+library(patchwork)
+library(ggExtra)
+library(phylolm)
+library(ggpubr)
+
+## Removing leftovers
+rm(list=ls())
+
+## Gettging data
+## Life-history data
+data <- read.csv("./Data.csv", header = TRUE)
+data$Species <- gsub(" ", "_", data$Species)
+
+## Getting tree
+tree <- read.nexus("./output.nex")
+tree <- maxCladeCred(tree,rooted=FALSE)
+
+## Checking all species
+all(tree$tip.label %in% data$Species)
+all(data$Species %in% tree$tip.label)
+
+## Transforming variable classes
+data$Diet <- as.factor(data$Diet)
+data$Foraging <- as.factor(data$Foraging)
+
+## Dichromatism
+color <- read.csv("./plumage_scores.csv")
+color$Scientific_name <- gsub(" ", "_", color$Scientific_name)
+
+## Merging data
+data2 <- data[which(data$Species %in% color$Scientific_name),]
+data2$FemaleCol <- NA
+data2$MaleCol <- NA
+for(i in 1:dim(data2)[1]){
+  data2$FemaleCol[i] <- color[which(color$Scientific_name == data2$Species[i]),"Female_plumage_score"]
+  data2$MaleCol[i] <- color[which(color$Scientific_name == data2$Species[i]),"Male_plumage_score"]
+}
+any(is.na(data2$FemaleCol))
+any(is.na(data2$MaleCol))
+
+## Dichromatism
+data2$Dichromatism <- data2$MaleCol - data2$FemaleCol
+hist(normalize(data2$Dichromatism))
+class(data2$Dichromatism)
+
+## Phylogeny filtering
+corte <- which(!tree$tip.label %in% data2$Species)
+tree2 <- drop.tip(tree, corte)
+
+all(tree2$tip.label %in% data2$Species)
+all(data2$Species %in% tree2$tip.label)
+
+## Dichromatism direction
+data2$Direction <- NA
+data2[which(data2$Dichromatism > 0),"Direction"] <- "Male-driven"
+
+########################################################################################################################################
+########################################################################################################################################
+########################################################################################################################################
+## Models
+males <- data2[which(data2$Direction == "Male-driven"),]
+head(males)
+colnames(males)
+hist(log(males$BodyMass.Value))
+hist(sqrt(males$Dichromatism))
+
+## General data
+sort(males$Dichromatism, decreasing = F)
+length(table(males[which(males$Dichromatism < 0.14),"Species"]))
+
+## Trimming phylogeny
+corte_males <- which(!tree2$tip.label %in% males$Species)
+tree_males <- drop.tip(tree2, corte_males)
+all(tree_males$tip.label %in% males$Species)
+all(males$Species %in% tree_males$tip.label)
+
+## Models
+model_BM <- gls(sqrt(Dichromatism) ~  Diet + Foraging, data = males,
+                correlation = corBrownian(phy = tree_males, form = ~Species), method = "ML")
+
+model_OU <- gls(sqrt(Dichromatism) ~  Diet + Foraging, data = males,
+                correlation = corMartins(1, phy = tree_males, fixed = F, form = ~Species), method = "ML")
+AIC(model_BM,model_OU)
+
+selection <- dredge(model_OU)
+selection2 <- model.avg(selection)
+summary(model_OU)
+confint(selection2)
+
+## Changing levels
+males$Diet <- relevel(males$Diet, ref = "HighlySpecialist")
+males$Foraging <- relevel(males$Foraging, ref = "HighlySpecialist")
+model_OU_2 <- gls(sqrt(Dichromatism) ~  Diet + Foraging, data = males,
+               correlation = corMartins(1, phy = tree_males, fixed = F, form = ~Species), method = "ML")
+selection_male <- dredge(model_OU_2)
+selection2_male <- model.avg(selection_male)
+summary(selection2_male)
+confint(selection2_male)
+
+males$Diet <- relevel(males$Diet, ref = "Specialized")
+males$Foraging <- relevel(males$Foraging, ref = "Specialized")
+model_OU_3 <- gls(sqrt(Dichromatism) ~  Diet + Foraging, data = males,
+                correlation = corMartins(1, phy = tree_males, fixed = F, form = ~Species), method = "ML")
+## Checking
+selection_male_2 <- dredge(model_OU_3)
+selection2_male_2 <- model.avg(selection_male_2)
+summary(selection2_male_2)
+confint(selection2_male_2)
+
+## Figures
+jpeg("./Dichromatism.jpg", width = 10, height = 5, units = 'in', res = 800) 
+first <- ggplot(males, aes(y = sqrt(Dichromatism), x = Diet)) + geom_jitter(position = position_jitter(0.2), alpha = 0.2) + theme_bw() + geom_boxplot(alpha = 0.8) +
+  annotate("text", label =c("a", "b", "a"), size = 9, x =c(1,2,3), 
+           y = c(max(males[which(males$Diet == "Generalist"),"Preditos"]) + 0.1,
+                 max(males[which(males$Diet == "HighlySpecialist"),"Preditos"]) + 0.1,
+                 max(males[which(males$Diet == "Specialized"),"Preditos"]) + 0.1)) + 
+  ylab("Predicted values of male-driven dichromatism") + xlab("Diet strategy")
+
+second <- ggplot(males, aes(y = sqrt(Dichromatism), x = Foraging)) + geom_jitter(position = position_jitter(0.2), alpha = 0.2) + theme_bw() + geom_boxplot(alpha = 0.8) +
+  annotate("text", label =c("a", "b", "a"), size = 9, x =c(1,2,3), 
+           y = c(max(males[which(males$Foraging == "Generalist"),"Preditos"]) + 0.1,
+                 max(males[which(males$Foraging == "HighlySpecialist"),"Preditos"]) + 0.1,
+                 max(males[which(males$Foraging == "Specialized"),"Preditos"]) + 0.1)) + 
+  ylab(NULL) + xlab("Foraging strategy")
+
+ggarrange(first, second, ncol = 2)
+dev.off()
+
+## End of code
+########################################################################################################################################
+########################################################################################################################################
+########################################################################################################################################
+########################################################################################################################################
+########################################################################################################################################
+########################################################################################################################################
+########################################################################################################################################
